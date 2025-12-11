@@ -550,11 +550,12 @@ export default function SchengenAppointmentChecker() {
                           </td>
                           <td className="py-4 px-4 align-top text-right">
                             <button
-                              onClick={async () => {
+                              onClick={() => {
                                 const codeForSlots = code;
                                 setSelectedCountry({ ...c, code: codeForSlots });
                                 setSelectedCityIndex(0);
-                                await fetchSlotsForCountry(codeForSlots);
+                                // don't await — open modal immediately and load in background
+                                fetchSlotsForCountry(codeForSlots);
                               }}
                               className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
                             >
@@ -579,7 +580,7 @@ export default function SchengenAppointmentChecker() {
       </div>
 
       {/* Modal / drawer: improved two-column calendar + city info */}
-      {selectedCountry && activeModalData && (
+      {selectedCountry && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="absolute inset-0" onClick={() => setSelectedCountry(null)} />
           <div className="relative w-full max-w-6xl mx-auto bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-hidden">
@@ -587,7 +588,8 @@ export default function SchengenAppointmentChecker() {
               <div>
                 <div className="text-[11px] font-semibold tracking-[0.16em] text-slate-400 uppercase">Appointment calendar</div>
                 <h2 className="mt-1 text-xl md:text-2xl font-semibold text-slate-900">
-                  {selectedCountry.name} — {activeModalData.slot.isAvailable ? "Available" : "Not available"}
+                  {selectedCountry.name}
+                  {slotsByCountry[getCountryCode(selectedCountry) || selectedCountry.code]?.isAvailable ? " — Available" : ""}
                 </h2>
                 <p className="text-xs md:text-sm text-slate-500 mt-1">
                   Select an application centre and an available date to book your appointment.
@@ -601,152 +603,181 @@ export default function SchengenAppointmentChecker() {
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex flex-col">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-slate-900">Application Centres</h3>
-                  <div className="text-xs text-slate-500">{activeModalData.cities.length} centers</div>
+                  <div className="text-xs text-slate-500">
+                    {(() => {
+                      const code = getCountryCode(selectedCountry) || selectedCountry.code;
+                      const s = slotsByCountry[code];
+                      return s ? `${s.cities.length} centers` : loadingSlots === code ? "Loading…" : "—";
+                    })()}
+                  </div>
                 </div>
 
                 <div className="space-y-2 overflow-y-auto text-sm max-h-72 pr-1">
-                  {activeModalData.cities.length ? (
-                    activeModalData.cities.map((city: any, idx: number) => {
-                      const isActive = idx === selectedCityIndex;
-                      const count = (city.allDates && city.allDates.length) || (city.nextDate ? 1 : 0);
-                      return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            setSelectedCityIndex(idx);
-                            setFocusedIsoDate(null);
-                          }}
-                          className={`w-full text-left rounded-2xl px-3 py-2 border text-xs md:text-sm transition ${isActive ? "border-indigo-500 bg-white text-slate-900 shadow-sm" : "border-transparent bg-transparent text-slate-700 hover:bg-white"}`}
-                        >
-                          <div className="flex justify-between">
-                            <div className="font-medium">{city.name}</div>
-                            <div className="text-[11px] text-slate-500">{count} dates</div>
-                          </div>
-                          <div className="text-[11px] text-slate-500 mt-1">
-                            {city.nextDate ? formatReadable(city.nextDate) : "No dates yet"}
-                          </div>
-                        </button>
-                      );
-                    })
+                  {loadingSlots === (getCountryCode(selectedCountry) || selectedCountry.code) ? (
+                    <div className="py-8 text-center text-slate-500">Loading slots…</div>
+                  ) : !slotsByCountry[getCountryCode(selectedCountry) || selectedCountry.code] ? (
+                    <div className="py-6 text-center text-slate-500">
+                      No slot data available yet. Click <strong>Refresh</strong> or try again.
+                    </div>
                   ) : (
-                    <div className="text-xs text-slate-500">No application centers provided in API response.</div>
+                    (slotsByCountry[getCountryCode(selectedCountry) || selectedCountry.code].cities || []).map(
+                      (city: any, idx: number) => {
+                        const isActive = idx === selectedCityIndex;
+                        const count = (city.allDates && city.allDates.length) || (city.nextDate ? 1 : 0);
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCityIndex(idx);
+                              setFocusedIsoDate(null);
+                            }}
+                            className={`w-full text-left rounded-2xl px-3 py-2 border text-xs md:text-sm transition ${isActive ? "border-indigo-500 bg-white text-slate-900 shadow-sm" : "border-transparent bg-transparent text-slate-700 hover:bg-white"}`}
+                          >
+                            <div className="flex justify-between">
+                              <div className="font-medium">{city.name}</div>
+                              <div className="text-[11px] text-slate-500">{count} dates</div>
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-1">
+                              {city.nextDate ? formatReadable(city.nextDate) : "No dates yet"}
+                            </div>
+                          </button>
+                        );
+                      }
+                    )
                   )}
                 </div>
               </div>
 
               {/* Right: Calendar + City info */}
               <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-900">{activeModalData.activeCity?.name || "Available Dates"}</h3>
-                    {activeModalData.activeCity?.nextDate && (<div className="text-[11px] text-slate-500">Earliest: {formatReadable(activeModalData.activeCity.nextDate)}</div>)}
+                {loadingSlots === (getCountryCode(selectedCountry) || selectedCountry.code) ? (
+                  <div className="py-12 text-center text-slate-500">Loading calendar…</div>
+                ) : !slotsByCountry[getCountryCode(selectedCountry) || selectedCountry.code] ? (
+                  <div className="py-12 text-center text-slate-500">
+                    No appointment data yet. Try refreshing slots.
                   </div>
-                  <div className="text-[11px] text-slate-500">Country: {selectedCountry.name}</div>
-                </div>
+                ) : (
+                  (() => {
+                    const code = getCountryCode(selectedCountry) || selectedCountry.code;
+                    const modal = slotsByCountry[code];
+                    const activeCity = modal.cities[selectedCityIndex] || modal.cities[0];
+                    const datesForActiveCity =
+                      (activeCity && activeCity.allDates && activeCity.allDates.length ? activeCity.allDates : activeCity.nextDate ? [activeCity.nextDate] : []) || [];
 
-                {/* Calendar grid */}
-                <div className="mb-3">
-                  <CalendarGrid
-                    dates={activeModalData.datesForActiveCity}
-                    focusedIso={focusedIsoDate || activeModalData.effectiveSelectedDate}
-                    onPick={changeSelectedDate}
-                  />
-                </div>
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-900">
+                              {activeCity?.name || "Available Dates"}
+                            </h3>
+                            {activeCity?.nextDate && (
+                              <div className="text-[11px] text-slate-500">Earliest: {formatReadable(activeCity.nextDate)}</div>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500">Country: {selectedCountry.name}</div>
+                        </div>
 
-                {/* Selected date + actions */}
-                <div className="mt-auto border-t border-slate-100 pt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div className="text-xs md:text-sm text-slate-700">
-                    <div className="font-medium">Selected Appointment Date</div>
-                    <div className="mt-0.5">{formatReadable(focusedIsoDate || activeModalData.effectiveSelectedDate) || "No date selected"}</div>
-                    {activeModalData.activeCity && (
-                      <div className="text-[11px] text-slate-500 mt-0.5">Location: {activeModalData.activeCity.name}</div>
-                    )}
-                  </div>
+                        <div className="mb-3">
+                          <CalendarGrid
+                            dates={datesForActiveCity}
+                            focusedIso={focusedIsoDate || undefined}
+                            onPick={(iso) => setFocusedIsoDate(iso)}
+                          />
+                        </div>
 
-                  <div className="flex flex-col md:flex-row gap-2 md:items-center">
-                    <button
-                      type="button"
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                      onClick={() => {
-                        // prev: jump to previous available date
-                        const list = activeModalData.datesForActiveCity || [];
-                        if (!list.length) return;
-                        const current = focusedIsoDate || activeModalData.effectiveSelectedDate;
-                        const idx = list.indexOf(current as string);
-                        const next = list[idx - 1];
-                        if (next) setFocusedIsoDate(next);
-                      }}
-                      disabled={!activeModalData.datesForActiveCity.length}
-                    >
-                      Previous Slot
-                    </button>
+                        <div className="mt-auto border-t border-slate-100 pt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div className="text-xs md:text-sm text-slate-700">
+                            <div className="font-medium">Selected Appointment Date</div>
+                            <div className="mt-0.5">{formatReadable(focusedIsoDate || (datesForActiveCity[0] || null)) || "No date selected"}</div>
+                            {activeCity && (
+                              <div className="text-[11px] text-slate-500 mt-0.5">Location: {activeCity.name}</div>
+                            )}
+                          </div>
 
-                    <button
-                      type="button"
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                      onClick={() => {
-                        const list = activeModalData.datesForActiveCity || [];
-                        if (!list.length) return;
-                        const current = focusedIsoDate || activeModalData.effectiveSelectedDate;
-                        const idx = list.indexOf(current as string);
-                        const next = list[idx + 1];
-                        if (next) setFocusedIsoDate(next);
-                      }}
-                      disabled={!activeModalData.datesForActiveCity.length}
-                    >
-                      Next Slot
-                    </button>
+                          <div className="flex flex-col md:flex-row gap-2 md:items-center">
+                            <button
+                              type="button"
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                const list = datesForActiveCity || [];
+                                if (!list.length) return;
+                                const current = focusedIsoDate || list[0];
+                                const idx = list.indexOf(current as string);
+                                const prev = list[idx - 1];
+                                if (prev) setFocusedIsoDate(prev);
+                              }}
+                              disabled={!datesForActiveCity.length}
+                            >
+                              Previous Slot
+                            </button>
 
-                    <button
-                      type="button"
-                      className="rounded-full bg-indigo-600 px-4 py-2 text-xs md:text-sm font-medium text-white shadow hover:bg-indigo-700 disabled:opacity-40"
-                      disabled={!activeModalData.effectiveSelectedDate && !focusedIsoDate}
-                      onClick={() => {
-                        // Place-holder booking action
-                        console.log("Book appointment", {
-                          country: selectedCountry.name,
-                          countryCode: activeModalData.code,
-                          center: activeModalData.activeCity?.name,
-                          date: focusedIsoDate || activeModalData.effectiveSelectedDate,
-                        });
-                        alert("Booking flow placeholder — integrate your booking endpoint here.");
-                      }}
-                    >
-                      Book This Appointment
-                    </button>
-                  </div>
-                </div>
+                            <button
+                              type="button"
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                const list = datesForActiveCity || [];
+                                if (!list.length) return;
+                                const current = focusedIsoDate || list[0];
+                                const idx = list.indexOf(current as string);
+                                const next = list[idx + 1];
+                                if (next) setFocusedIsoDate(next);
+                              }}
+                              disabled={!datesForActiveCity.length}
+                            >
+                              Next Slot
+                            </button>
 
-                {/* City / VFS info card */}
-                <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="text-xs text-slate-500">Application center address</div>
-                      <div className="mt-1 font-medium text-slate-900">
-                        {activeModalData.activeCity?.name || "—"}
-                      </div>
-                      <div className="text-[13px] text-slate-700 mt-1">
-                        {extractAddress(activeModalData.activeCity, activeModalData.slot) || (
-                          <span className="text-[11px] text-slate-500">Address not available in API</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-xs text-slate-500 text-right">
-                      <div>VFS / BLS</div>
-                      <div className="mt-1">Mon - Fri</div>
-                      <div className="mt-1">09:30 - 16:30</div>
-                    </div>
-                  </div>
+                            <button
+                              type="button"
+                              className="rounded-full bg-indigo-600 px-4 py-2 text-xs md:text-sm font-medium text-white shadow hover:bg-indigo-700 disabled:opacity-40"
+                              disabled={!datesForActiveCity.length}
+                              onClick={() => {
+                                // Place-holder booking action
+                                console.log("Book appointment", {
+                                  country: selectedCountry.name,
+                                  countryCode: modal ? modal.code : code,
+                                  center: activeCity?.name,
+                                  date: focusedIsoDate || (datesForActiveCity[0] || null),
+                                });
+                                alert("Booking flow placeholder — integrate your booking endpoint here.");
+                              }}
+                            >
+                              Book This Appointment
+                            </button>
+                          </div>
+                        </div>
 
-                  {/* small debug / raw link */}
-                  <details className="mt-3 text-[11px] text-slate-500">
-                    <summary className="cursor-pointer">Raw API snippet</summary>
-                    <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-white p-2 text-[11px]">
-                      {JSON.stringify(activeModalData.slot.raw || activeModalData.activeCity || {}, null, 2)}
-                    </pre>
-                  </details>
-                </div>
+                        <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="text-xs text-slate-500">Application center address</div>
+                              <div className="mt-1 font-medium text-slate-900">{activeCity?.name || "—"}</div>
+                              <div className="text-[13px] text-slate-700 mt-1">
+                                {extractAddress(activeCity, modal) || (
+                                  <span className="text-[11px] text-slate-500">Address not available in API</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-xs text-slate-500 text-right">
+                              <div>VFS / BLS</div>
+                              <div className="mt-1">Mon - Fri</div>
+                              <div className="mt-1">09:30 - 16:30</div>
+                            </div>
+                          </div>
+
+                          <details className="mt-3 text-[11px] text-slate-500">
+                            <summary className="cursor-pointer">Raw API snippet</summary>
+                            <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-white p-2 text-[11px]">
+                              {JSON.stringify(modal.raw || {}, null, 2)}
+                            </pre>
+                          </details>
+                        </div>
+                      </>
+                    );
+                  })()
+                )}
               </div>
             </div>
           </div>
