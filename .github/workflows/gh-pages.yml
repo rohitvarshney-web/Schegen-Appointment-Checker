@@ -1,9 +1,14 @@
 name: Build and deploy to GitHub Pages
 
+# run on push to main
 on:
   push:
     branches:
       - main
+
+# request write permission for contents so the action can push the gh-pages branch
+permissions:
+  contents: write
 
 jobs:
   build-and-deploy:
@@ -12,6 +17,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # keep credentials so subsequent git push uses GITHUB_TOKEN
+          persist-credentials: true
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -19,7 +28,7 @@ jobs:
           node-version: "18"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build
         run: npm run build
@@ -29,3 +38,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
+          publish_branch: gh-pages
