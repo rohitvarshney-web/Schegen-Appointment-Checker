@@ -1,14 +1,20 @@
-/* SchengenAppointmentChecker.tsx
-   Vite + React + TS + Tailwind component.
-   Uses Atlys APIs with offline/demo fallback.
-*/
-
+// src/SchengenAppointmentChecker.tsx
 import React, { useEffect, useMemo, useState } from "react";
 
+/**
+ * Enhanced Schengen Appointment Checker
+ * - Calendar view (month grid) for selected center
+ * - Left pane with centers list
+ * - City info / VFS address card under calendar
+ *
+ * Design reference: uploaded PDFs. :contentReference[oaicite:2]{index=2} :contentReference[oaicite:3]{index=3}
+ */
+
+/* ---------- Demo fallbacks (unchanged) ---------- */
 const DEMO_COUNTRIES = [
   { code: "FR", name: "France" },
   { code: "CH", name: "Switzerland" },
-  { code: "DE", name: "Germany" }
+  { code: "DE", name: "Germany" },
 ];
 
 const DEMO_SLOTS: Record<
@@ -16,7 +22,7 @@ const DEMO_SLOTS: Record<
   {
     nextDate: string | null;
     isAvailable: boolean;
-    cities: { name: string; nextDate: string | null; allDates: string[] }[];
+    cities: { name: string; nextDate: string | null; allDates: string[]; address?: string }[];
     raw: any;
   }
 > = {
@@ -27,15 +33,17 @@ const DEMO_SLOTS: Record<
       {
         name: "Ahmedabad",
         nextDate: "December 15, 2025",
-        allDates: ["December 15, 2025", "December 16, 2025", "December 17, 2025"]
+        allDates: ["2025-12-15", "2025-12-16", "2025-12-17"],
+        address: "VFS Global Ahmedabad, Some Street, Ahmedabad, 380001",
       },
       {
         name: "Bangalore",
         nextDate: "December 15, 2025",
-        allDates: ["December 15, 2025", "December 18, 2025"]
-      }
+        allDates: ["2025-12-15", "2025-12-18"],
+        address: "VFS Bangalore, Address line, Bangalore, 560001",
+      },
     ],
-    raw: { note: "Demo slots for France used because API could not be reached." }
+    raw: { note: "Demo slots for France used because API could not be reached." },
   },
   CH: {
     nextDate: "December 15, 2025",
@@ -44,18 +52,21 @@ const DEMO_SLOTS: Record<
       {
         name: "Ahmedabad",
         nextDate: "December 15, 2025",
-        allDates: ["December 15, 2025", "December 20, 2025"]
+        allDates: ["2025-12-15", "2025-12-20"],
+        address: "Switzerland VFS Ahmedabad, Some Street, Ahmedabad, 380001",
       },
       {
         name: "Bangalore",
         nextDate: "December 15, 2025",
-        allDates: ["December 15, 2025", "December 22, 2025"]
-      }
+        allDates: ["2025-12-15", "2025-12-22"],
+        address: "Switzerland VFS Bangalore, Address line, Bangalore, 560001",
+      },
     ],
-    raw: { note: "Demo slots for Switzerland used because API could not be reached." }
-  }
+    raw: { note: "Demo slots for Switzerland used because API could not be reached." },
+  },
 };
 
+/* ---------- Types ---------- */
 type Country = {
   code: string;
   name: string;
@@ -66,10 +77,66 @@ type Country = {
 type SlotSummary = {
   nextDate: string | null;
   isAvailable: boolean;
-  cities: { name: string; nextDate: string | null; allDates: string[] }[];
+  cities: { name: string; nextDate: string | null; allDates: string[]; address?: string }[];
   raw?: any;
 };
 
+/* ---------- Helper utilities ---------- */
+
+/** Format yyyy-mm-dd to readable string (e.g. Dec 15, 2025) */
+function formatReadable(dateIso: string | null | undefined) {
+  if (!dateIso) return null;
+  try {
+    const d = new Date(dateIso);
+    if (isNaN(d.getTime())) return dateIso;
+    return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  } catch {
+    return dateIso;
+  }
+}
+
+/** Build a month grid (weeks) for a given yyyy-mm string and mark available dates */
+function buildMonthGrid(isoDates: string[] = [], focusedIso?: string) {
+  // if no focusedIso present use first available
+  const selected = focusedIso || isoDates[0] || null;
+  // if still nothing, default to current month
+  const anchor = selected ? new Date(selected) : new Date();
+  const year = anchor.getFullYear();
+  const month = anchor.getMonth();
+  const firstOfMonth = new Date(year, month, 1);
+  const startDay = firstOfMonth.getDay(); // 0 = Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  // normalize available set for month
+  const availableSet = new Set(
+    isoDates.map((d) => {
+      try {
+        const dd = new Date(d);
+        return dd.toISOString().slice(0, 10);
+      } catch {
+        return d;
+      }
+    })
+  );
+
+  const weeks: string[][] = [];
+  let week: string[] = new Array(startDay).fill("");
+  for (let day = 1; day <= daysInMonth; day++) {
+    week.push(new Date(year, month, day).toISOString().slice(0, 10));
+    if (week.length === 7) {
+      weeks.push(week);
+      week = [];
+    }
+  }
+  if (week.length) {
+    while (week.length < 7) week.push("");
+    weeks.push(week);
+  }
+
+  return { weeks, year, monthIndex: month, availableSet, selectedIso: selected };
+}
+
+/* ---------- Component ---------- */
 export default function SchengenAppointmentChecker() {
   const [countries, setCountries] = useState<Country[]>([]);
   const [filtered, setFiltered] = useState<Country[]>([]);
@@ -82,8 +149,6 @@ export default function SchengenAppointmentChecker() {
   const [countriesRawDebug, setCountriesRawDebug] = useState<any>(null);
   const [offlineMode, setOfflineMode] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  const [selectedCityIndex, setSelectedCityIndex] = useState(0);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const residence = "IN";
   const citizenship = "IN";
@@ -94,11 +159,6 @@ export default function SchengenAppointmentChecker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    setSelectedCityIndex(0);
-    setSelectedDate(null);
-  }, [selectedCountry?.code]);
-
   async function fetchCountries() {
     setLoadingCountryCodes(true);
     setError(null);
@@ -108,7 +168,7 @@ export default function SchengenAppointmentChecker() {
       setCountries(DEMO_COUNTRIES);
       setFiltered(DEMO_COUNTRIES);
       setLoadingCountryCodes(false);
-      setError("Running in preview mode. Showing demo countries.");
+      setError("Preview mode: showing demo countries.");
       setLastUpdatedAt(new Date());
       return;
     }
@@ -117,43 +177,28 @@ export default function SchengenAppointmentChecker() {
       const url = `https://api.atlys.com/api/v3/countries?citizenship=${citizenship}&residence=${residence}&pincode=${pincode}&isEnterprise=false`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Countries API returned ${res.status}`);
-
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        console.error("Failed to parse countries JSON", jsonErr);
-      }
-
+      const data = await res.json();
       setCountriesRawDebug(data);
 
       let list: any[] = [];
       if (Array.isArray(data)) list = data;
       else if (data && typeof data === "object") {
-        if (Array.isArray((data as any).countries)) list = (data as any).countries;
-        else if (Array.isArray((data as any).data)) list = (data as any).data;
+        if (Array.isArray(data.countries)) list = data.countries;
+        else if (Array.isArray(data.data)) list = data.data;
       }
 
-      const mapped: Country[] = list.map((c) => ({
-        code:
-          c.code ||
-          c.iso2_code ||
-          c.countryCode ||
-          c.alpha2 ||
-          c.iso2 ||
-          c.iso ||
-          c.country_code ||
-          "",
+      const mapped = list.map((c) => ({
+        code: c.code || c.iso2_code || c.countryCode || c.alpha2 || c.iso2 || c.iso || c.country_code || "",
         name: c.name || c.countryName || c.label || c.title || "Unknown",
         __raw: c,
-        availableSummary: null
+        availableSummary: null,
       }));
 
       setOfflineMode(false);
       setCountries(mapped);
       setFiltered(mapped);
     } catch (err) {
-      console.error("Countries fetch failed", err);
+      console.error(err);
       setOfflineMode(true);
       setError("Could not reach Atlys countries API. Showing demo data.");
       setCountries(DEMO_COUNTRIES);
@@ -166,7 +211,7 @@ export default function SchengenAppointmentChecker() {
 
   async function fetchSlotsForCountry(countryCode: string | undefined | null) {
     if (!countryCode) return;
-    if (slotsByCountry[countryCode]) return;
+    if (slotsByCountry[countryCode]) return; // cached
 
     setLoadingSlots(countryCode);
     setError(null);
@@ -181,8 +226,8 @@ export default function SchengenAppointmentChecker() {
             nextDate: null,
             isAvailable: false,
             cities: [],
-            raw: { note: "No demo slots configured for this country in offline mode." }
-          }
+            raw: { note: "No demo slots configured for this country in offline mode." },
+          },
         }));
       }
       setLoadingSlots("");
@@ -220,8 +265,8 @@ export default function SchengenAppointmentChecker() {
             nextDate: null,
             isAvailable: false,
             cities: [],
-            raw: { note: "No slots available or API unreachable." }
-          }
+            raw: { note: "No slots available or API unreachable." },
+          },
         }));
       }
     } finally {
@@ -232,7 +277,7 @@ export default function SchengenAppointmentChecker() {
 
   function extractSummaryFromSlotsData(data: any): Omit<SlotSummary, "raw"> {
     let nextDate: string | null = null;
-    let cities: { name: string; nextDate: string | null; allDates: string[] }[] = [];
+    let cities: any[] = [];
     let isAvailable = false;
 
     if (!data) return { nextDate, cities, isAvailable };
@@ -247,67 +292,42 @@ export default function SchengenAppointmentChecker() {
           c.nextDate ||
           c.firstAvailable ||
           null;
-        const allDates: string[] =
+        const allDates =
           (Array.isArray(c.actual_dates) && c.actual_dates) ||
           (Array.isArray(c.all_dates) && c.all_dates) ||
           [];
-        return { name, nextDate: primaryDate, allDates };
+        // some API payloads include address fields - attempt to extract
+        const address = c.address || c.center_address || c.vfs_address || c.location || null;
+        return { name, nextDate: primaryDate, allDates, address };
       });
 
       nextDate =
-        (data as any).earliest_available_date ||
-        (cities.find((c) => c.nextDate) || {}).nextDate ||
-        null;
+        data.earliest_available_date || (cities.find((c) => c.nextDate) || {}).nextDate || null;
       isAvailable = !!cities.length;
       return { nextDate, cities, isAvailable };
     }
 
-    if (Array.isArray(data)) {
-      cities = data.map((c: any) => ({
-        name: c.centre_name_fe || c.centre_name || c.cityName || c.name || c.city || "-",
-        nextDate:
-          c.earliest_date ||
-          (Array.isArray(c.actual_dates) && c.actual_dates[0]) ||
-          (Array.isArray(c.all_dates) && c.all_dates[0]) ||
-          c.nextDate ||
-          c.firstAvailable ||
-          null,
-        allDates:
-          (Array.isArray(c.actual_dates) && c.actual_dates) ||
-          (Array.isArray(c.all_dates) && c.all_dates) ||
-          []
-      }));
-      nextDate = (cities.find((c) => c.nextDate) || {}).nextDate || null;
-      isAvailable = !!cities.length;
-      return { nextDate, cities, isAvailable };
-    }
-
-    if (
-      data &&
-      typeof data.message === "string" &&
-      data.message.toLowerCase().includes("not available")
-    ) {
-      return { nextDate: null, cities: [], isAvailable: false };
-    }
-
+    // fallback: find first array in object and treat as centers
     if (data && typeof data === "object") {
-      const arrays = Object.values(data).filter((v) => Array.isArray(v)) as any[];
+      const arrays = Object.values(data).filter((v) => Array.isArray(v));
       if (arrays.length) {
         const arr = arrays[0];
-        cities = arr.map((c: any) => ({
-          name: c.centre_name_fe || c.centre_name || c.cityName || c.name || c.city || "-",
-          nextDate:
+        cities = arr.map((c: any) => {
+          const name = c.centre_name_fe || c.centre_name || c.cityName || c.name || c.city || "-";
+          const primaryDate =
             c.earliest_date ||
             (Array.isArray(c.actual_dates) && c.actual_dates[0]) ||
             (Array.isArray(c.all_dates) && c.all_dates[0]) ||
             c.nextDate ||
             c.firstAvailable ||
-            null,
-          allDates:
+            null;
+          const allDates =
             (Array.isArray(c.actual_dates) && c.actual_dates) ||
             (Array.isArray(c.all_dates) && c.all_dates) ||
-            []
-        }));
+            [];
+          const address = c.address || c.center_address || c.vfs_address || c.location || null;
+          return { name, nextDate: primaryDate, allDates, address };
+        });
         nextDate = (cities.find((c) => c.nextDate) || {}).nextDate || null;
         isAvailable = !!cities.length;
       }
@@ -336,14 +356,14 @@ export default function SchengenAppointmentChecker() {
     const lq = q.toLowerCase();
     setFiltered(
       countries.filter(
-        (c) => (c.name || "").toLowerCase().includes(lq) || (c.code || "").toLowerCase().includes(lq)
+        (c) =>
+          (c.name || "").toLowerCase().includes(lq) || (c.code || "").toLowerCase().includes(lq)
       )
     );
   }
 
   const stats = useMemo(() => {
     const withSlots = Object.values(slotsByCountry).filter((s) => s?.isAvailable).length;
-
     let earliest: string | null = null;
     let mostCode: string | null = null;
     let mostCount = 0;
@@ -359,13 +379,16 @@ export default function SchengenAppointmentChecker() {
     });
 
     const mostCountryName = countries.find((c) => c.code === mostCode)?.name || null;
-
     return { total: countries.length, withSlots, earliest, mostCountryName };
   }, [countries, slotsByCountry]);
 
   const lastUpdatedLabel = lastUpdatedAt
     ? lastUpdatedAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
     : "—";
+
+  /* ---------- modal state (calendar view) ---------- */
+  const [selectedCityIndex, setSelectedCityIndex] = useState(0);
+  const [focusedIsoDate, setFocusedIsoDate] = useState<string | null>(null);
 
   const activeModalData = (() => {
     if (!selectedCountry) return null;
@@ -383,23 +406,25 @@ export default function SchengenAppointmentChecker() {
       : [];
 
     const effectiveSelectedDate =
-      selectedDate && datesForActiveCity.includes(selectedDate) ? selectedDate : datesForActiveCity[0] || null;
+      (focusedIsoDate && datesForActiveCity.includes(focusedIsoDate)) ||
+      (datesForActiveCity.length ? datesForActiveCity[0] : null);
 
     return { code, slot, cities, activeCity, datesForActiveCity, effectiveSelectedDate };
   })();
 
-  function changeSelectedDate(direction: 1 | -1) {
-    if (!activeModalData) return;
-    const { datesForActiveCity, effectiveSelectedDate } = activeModalData;
-    if (!datesForActiveCity.length || !effectiveSelectedDate) return;
-    const idx = datesForActiveCity.indexOf(effectiveSelectedDate);
-    const nextIdx = idx + direction;
-    if (nextIdx < 0 || nextIdx >= datesForActiveCity.length) return;
-    setSelectedDate(datesForActiveCity[nextIdx]);
+  useEffect(() => {
+    // whenever modal opens or city changes, reset focused date
+    setFocusedIsoDate(null);
+  }, [selectedCountry?.code, selectedCityIndex]);
+
+  function changeSelectedDate(iso: string | null) {
+    if (!iso) return;
+    setFocusedIsoDate(iso);
   }
 
+  /* ---------- Render ---------- */
   return (
-    <div className="min-h-screen bg-[#F5F7FB] py-8 px-4">
+    <div className="min-h-screen bg-[#F7F8FA] py-8 px-4">
       <div className="mx-auto max-w-6xl">
         <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 md:p-8">
           <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -411,7 +436,8 @@ export default function SchengenAppointmentChecker() {
                 Schengen Visa Appointment Availability
               </h1>
               <p className="mt-1 text-xs md:text-sm text-slate-500">
-                Check appointment availability across all Schengen countries ex-India. Click any country to view centre-wise dates.
+                Check appointment availability across all Schengen countries ex-India. Click any
+                country to view centre-wise dates.
               </p>
             </div>
             <div className="text-right text-[11px] text-slate-500 space-y-0.5">
@@ -427,72 +453,50 @@ export default function SchengenAppointmentChecker() {
             </div>
           </header>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 md:gap-4 mb-7">
-            <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Countries with appointments</div>
-              <div className="mt-2 flex items-baseline gap-1">
-                <div className="text-xl font-semibold text-slate-900">
-                  {stats.withSlots}
-                  <span className="text-sm text-slate-400">/{stats.total}</span>
-                </div>
-              </div>
-              <div className="mt-1 text-[11px] text-emerald-600">
-                {stats.total ? Math.round((stats.withSlots / stats.total) * 100) : 0}% coverage
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Earliest available date</div>
-              <div className="mt-2 text-sm font-semibold text-slate-900">{stats.earliest || "—"}</div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Most available country</div>
-              <div className="mt-2 text-sm font-semibold text-slate-900">{stats.mostCountryName || "—"}</div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Raw country data</div>
-              <div className="mt-2 text-[11px] text-slate-500">{offlineMode ? "Demo data" : "Live from Atlys API"}</div>
-            </div>
-          </div>
-
+          {/* filters & actions */}
           <div className="mb-4 flex flex-col md:flex-row gap-3 md:items-end">
-            <div className="flex-1 flex flex-col sm:flex-row gap-3">
-              <div className="flex-1">
-                <label className="text-[11px] text-slate-500 mb-1 block">Filter by country</label>
-                <input value={query} onChange={(e) => onSearch(e.target.value)} placeholder="All Schengen countries"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div className="flex-1">
-                <label className="text-[11px] text-slate-500 mb-1 block">Filter by city (coming soon)</label>
-                <div className="relative">
-                  <input disabled placeholder="All appointment centres" className="w-full rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400" />
-                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">▼</span>
-                </div>
-              </div>
+            <div className="flex-1">
+              <label className="text-[11px] text-slate-500 mb-1 block">Filter by country</label>
+              <input
+                value={query}
+                onChange={(e) => onSearch(e.target.value)}
+                placeholder="All Schengen countries"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
             </div>
             <div className="flex gap-2">
-              <button onClick={fetchCountries} className="inline-flex items-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-indigo-700">⟳ Refresh</button>
+              <button
+                onClick={fetchCountries}
+                className="inline-flex items-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-indigo-700"
+              >
+                ⟳ Refresh
+              </button>
             </div>
           </div>
 
+          {/* table */}
           <section className="rounded-2xl border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-slate-500">
                   <tr>
-                    <th className="py-3 px-4 text-left text-[11px] font-semibold tracking-[0.14em] uppercase">Destination</th>
-                    <th className="py-3 px-4 text-left text-[11px] font-semibold tracking-[0.14em] uppercase">Next date</th>
-                    <th className="py-3 px-4 text-left text-[11px] font-semibold tracking-[0.14em] uppercase">Slots available</th>
-                    <th className="py-3 px-4 text-right text-[11px] font-semibold tracking-[0.14em] uppercase">Action</th>
+                    <th className="py-3 px-4 text-left text-[11px] font-semibold uppercase">Destination</th>
+                    <th className="py-3 px-4 text-left text-[11px] font-semibold uppercase">Next date</th>
+                    <th className="py-3 px-4 text-left text-[11px] font-semibold uppercase">Slots available</th>
+                    <th className="py-3 px-4 text-right text-[11px] font-semibold uppercase">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loadingCountryCodes ? (
-                    <tr><td colSpan={4} className="py-8 text-center text-slate-500 text-sm">Loading countries…</td></tr>
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-slate-500 text-sm">
+                        Loading countries…
+                      </td>
+                    </tr>
                   ) : error && !filtered.length ? (
-                    <tr><td colSpan={4} className="py-8 text-center text-red-600 text-sm">{error}</td></tr>
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-red-600 text-sm">{error}</td>
+                    </tr>
                   ) : (
                     filtered.map((c) => {
                       const code = getCountryCode(c) || c.code;
@@ -511,34 +515,49 @@ export default function SchengenAppointmentChecker() {
                           <td className="py-4 px-4 align-top">
                             {hasData ? (
                               available && slot.nextDate ? (
-                                <button type="button" className="text-emerald-600 text-sm font-medium hover:underline">{slot.nextDate}</button>
-                              ) : (<span className="text-[11px] font-semibold text-red-500">Not available</span>)
-                            ) : (<span className="text-[11px] text-slate-400">—</span>)}
+                                <span className="text-emerald-600 text-sm font-medium">{slot.nextDate}</span>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-red-500">Not available</span>
+                              )
+                            ) : (
+                              <span className="text-[11px] text-slate-400">—</span>
+                            )}
                           </td>
                           <td className="py-4 px-4 align-top">
                             {hasData ? (
-                              available ? (<div className="text-sm text-emerald-600 font-medium">{slot.cities?.length || 0} of {slot.cities?.length || 0} cities</div>)
-                              : (<span className="text-[11px] font-semibold text-red-500">Not Available</span>)
-                            ) : (<span className="text-[11px] text-slate-400">—</span>)}
+                              available ? (
+                                <div className="text-sm text-emerald-600 font-medium">
+                                  {slot.cities?.length || 0} of {slot.cities?.length || 0} cities
+                                </div>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-red-500">Not Available</span>
+                              )
+                            ) : (
+                              <span className="text-[11px] text-slate-400">—</span>
+                            )}
 
                             {available && cityPreview.length > 0 && (
                               <div className="mt-1 space-y-0.5 text-[11px] text-slate-700">
                                 {cityPreview.map((city, idx) => (
                                   <div key={idx}>
                                     <span>{city.name}</span>{" "}
-                                    {city.nextDate && (<button type="button" className="text-emerald-600 hover:underline">{city.nextDate}</button>)}
+                                    {city.nextDate && <span className="text-emerald-600"> {formatReadable(city.nextDate)}</span>}
                                   </div>
                                 ))}
-                                {remainingCount > 0 && (<div className="text-emerald-600 font-medium">+{remainingCount} more</div>)}
+                                {remainingCount > 0 && <div className="text-emerald-600 font-medium">+{remainingCount} more</div>}
                               </div>
                             )}
                           </td>
                           <td className="py-4 px-4 align-top text-right">
-                            <button onClick={async () => {
-                              const codeForSlots = code;
-                              setSelectedCountry({ ...c, code: codeForSlots });
-                              await fetchSlotsForCountry(codeForSlots);
-                            }} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
+                            <button
+                              onClick={async () => {
+                                const codeForSlots = code;
+                                setSelectedCountry({ ...c, code: codeForSlots });
+                                setSelectedCityIndex(0);
+                                await fetchSlotsForCountry(codeForSlots);
+                              }}
+                              className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            >
                               <span role="img" aria-label="calendar">📅</span> View
                             </button>
                           </td>
@@ -548,109 +567,290 @@ export default function SchengenAppointmentChecker() {
                   )}
 
                   {!loadingCountryCodes && !filtered.length && !error && (
-                    <tr><td colSpan={4} className="py-8 text-center text-slate-500 text-sm">No countries found.</td></tr>
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-slate-500 text-sm">No countries found.</td>
+                    </tr>
                   )}
                 </tbody>
               </table>
             </div>
           </section>
-
-          {countriesRawDebug && (
-            <details className="mt-4 text-[11px] text-slate-500">
-              <summary className="cursor-pointer">Country API debug</summary>
-              <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-100 p-2 text-[10px]">
-                {JSON.stringify(Array.isArray(countriesRawDebug) ? countriesRawDebug.slice(0, 2) : Array.isArray(countriesRawDebug.countries) ? countriesRawDebug.countries.slice(0, 2) : countriesRawDebug, null, 2)}
-              </pre>
-            </details>
-          )}
         </div>
+      </div>
 
-        {selectedCountry && activeModalData && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-            <div className="absolute inset-0" onClick={() => setSelectedCountry(null)} />
-            <div className="relative w-full max-w-5xl mx-auto bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-hidden">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <div className="text-[11px] font-semibold tracking-[0.16em] text-slate-400 uppercase">Appointment calendar</div>
-                  <h2 className="mt-1 text-xl md:text-2xl font-semibold text-slate-900">{selectedCountry.name} Visa Appointments</h2>
-                  <p className="text-xs md:text-sm text-slate-500 mt-1">Select an application center and available date to book your appointment.</p>
-                </div>
-                <button className="rounded-full px-3 py-1 text-slate-500 hover:bg-slate-100 text-sm" onClick={() => setSelectedCountry(null)}>✕</button>
+      {/* Modal / drawer: improved two-column calendar + city info */}
+      {selectedCountry && activeModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="absolute inset-0" onClick={() => setSelectedCountry(null)} />
+          <div className="relative w-full max-w-6xl mx-auto bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-hidden">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <div className="text-[11px] font-semibold tracking-[0.16em] text-slate-400 uppercase">Appointment calendar</div>
+                <h2 className="mt-1 text-xl md:text-2xl font-semibold text-slate-900">
+                  {selectedCountry.name} — {activeModalData.slot.isAvailable ? "Available" : "Not available"}
+                </h2>
+                <p className="text-xs md:text-sm text-slate-500 mt-1">
+                  Select an application centre and an available date to book your appointment.
+                </p>
               </div>
+              <button className="rounded-full px-3 py-1 text-slate-500 hover:bg-slate-100 text-sm" onClick={() => setSelectedCountry(null)}>✕</button>
+            </div>
 
-              <div className="grid md:grid-cols-[1.2fr,1.4fr] gap-6 mt-2">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex flex-col">
-                  <h3 className="text-sm font-semibold text-slate-900 mb-2">Application Centers</h3>
-                  <div className="text-xs text-slate-500 mb-2">{activeModalData.cities.length ? `${activeModalData.cities.length} centers` : "No center-level data available."}</div>
-                  <div className="space-y-2 overflow-y-auto text-sm max-h-64 pr-1">
-                    {activeModalData.cities.length ? activeModalData.cities.map((city, idx) => {
+            <div className="grid md:grid-cols-[1fr,1.4fr] gap-6 mt-2">
+              {/* Left: Centers list */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Application Centres</h3>
+                  <div className="text-xs text-slate-500">{activeModalData.cities.length} centers</div>
+                </div>
+
+                <div className="space-y-2 overflow-y-auto text-sm max-h-72 pr-1">
+                  {activeModalData.cities.length ? (
+                    activeModalData.cities.map((city: any, idx: number) => {
                       const isActive = idx === selectedCityIndex;
-                      const count = city.allDates?.length || (city.nextDate ? 1 : 0);
+                      const count = (city.allDates && city.allDates.length) || (city.nextDate ? 1 : 0);
                       return (
-                        <button key={idx} type="button" onClick={() => { setSelectedCityIndex(idx); setSelectedDate(null); }}
-                          className={`w-full text-left rounded-2xl px-3 py-2 border text-xs md:text-sm transition ${isActive ? "border-indigo-500 bg-white text-slate-900 shadow-sm" : "border-transparent bg-transparent text-slate-700 hover:bg-white"}`}>
-                          <div className="font-medium">{city.name}</div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">{count ? `${count} available dates` : "No dates available"}</div>
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCityIndex(idx);
+                            setFocusedIsoDate(null);
+                          }}
+                          className={`w-full text-left rounded-2xl px-3 py-2 border text-xs md:text-sm transition ${isActive ? "border-indigo-500 bg-white text-slate-900 shadow-sm" : "border-transparent bg-transparent text-slate-700 hover:bg-white"}`}
+                        >
+                          <div className="flex justify-between">
+                            <div className="font-medium">{city.name}</div>
+                            <div className="text-[11px] text-slate-500">{count} dates</div>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-1">
+                            {city.nextDate ? formatReadable(city.nextDate) : "No dates yet"}
+                          </div>
                         </button>
                       );
-                    }) : (<div className="text-xs text-slate-500">No application centers provided in API response.</div>)}
+                    })
+                  ) : (
+                    <div className="text-xs text-slate-500">No application centers provided in API response.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: Calendar + City info */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">{activeModalData.activeCity?.name || "Available Dates"}</h3>
+                    {activeModalData.activeCity?.nextDate && (<div className="text-[11px] text-slate-500">Earliest: {formatReadable(activeModalData.activeCity.nextDate)}</div>)}
+                  </div>
+                  <div className="text-[11px] text-slate-500">Country: {selectedCountry.name}</div>
+                </div>
+
+                {/* Calendar grid */}
+                <div className="mb-3">
+                  <CalendarGrid
+                    dates={activeModalData.datesForActiveCity}
+                    focusedIso={focusedIsoDate || activeModalData.effectiveSelectedDate}
+                    onPick={changeSelectedDate}
+                  />
+                </div>
+
+                {/* Selected date + actions */}
+                <div className="mt-auto border-t border-slate-100 pt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="text-xs md:text-sm text-slate-700">
+                    <div className="font-medium">Selected Appointment Date</div>
+                    <div className="mt-0.5">{formatReadable(focusedIsoDate || activeModalData.effectiveSelectedDate) || "No date selected"}</div>
+                    {activeModalData.activeCity && (
+                      <div className="text-[11px] text-slate-500 mt-0.5">Location: {activeModalData.activeCity.name}</div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-2 md:items-center">
+                    <button
+                      type="button"
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                      onClick={() => {
+                        // prev: jump to previous available date
+                        const list = activeModalData.datesForActiveCity || [];
+                        if (!list.length) return;
+                        const current = focusedIsoDate || activeModalData.effectiveSelectedDate;
+                        const idx = list.indexOf(current as string);
+                        const next = list[idx - 1];
+                        if (next) setFocusedIsoDate(next);
+                      }}
+                      disabled={!activeModalData.datesForActiveCity.length}
+                    >
+                      Previous Slot
+                    </button>
+
+                    <button
+                      type="button"
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                      onClick={() => {
+                        const list = activeModalData.datesForActiveCity || [];
+                        if (!list.length) return;
+                        const current = focusedIsoDate || activeModalData.effectiveSelectedDate;
+                        const idx = list.indexOf(current as string);
+                        const next = list[idx + 1];
+                        if (next) setFocusedIsoDate(next);
+                      }}
+                      disabled={!activeModalData.datesForActiveCity.length}
+                    >
+                      Next Slot
+                    </button>
+
+                    <button
+                      type="button"
+                      className="rounded-full bg-indigo-600 px-4 py-2 text-xs md:text-sm font-medium text-white shadow hover:bg-indigo-700 disabled:opacity-40"
+                      disabled={!activeModalData.effectiveSelectedDate && !focusedIsoDate}
+                      onClick={() => {
+                        // Place-holder booking action
+                        console.log("Book appointment", {
+                          country: selectedCountry.name,
+                          countryCode: activeModalData.code,
+                          center: activeModalData.activeCity?.name,
+                          date: focusedIsoDate || activeModalData.effectiveSelectedDate,
+                        });
+                        alert("Booking flow placeholder — integrate your booking endpoint here.");
+                      }}
+                    >
+                      Book This Appointment
+                    </button>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex flex-col">
-                  <div className="flex items-center justify-between mb-3">
+                {/* City / VFS info card */}
+                <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                  <div className="flex items-start justify-between">
                     <div>
-                      <h3 className="text-sm font-semibold text-slate-900">{activeModalData.activeCity?.name || "Available Dates"}</h3>
-                      {activeModalData.activeCity?.nextDate && (<div className="text-[11px] text-slate-500 mt-0.5">Earliest: {activeModalData.activeCity.nextDate}</div>)}
-                    </div>
-                    <div className="text-[11px] text-slate-500">Country: {selectedCountry.name}</div>
-                  </div>
-
-                  <div className="flex-1 flex flex-col">
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 text-xs mb-4 max-h-40 overflow-y-auto">
-                      {activeModalData.datesForActiveCity.length ? activeModalData.datesForActiveCity.map((d) => {
-                        const isSelected = d === activeModalData.effectiveSelectedDate;
-                        return (<button key={d} type="button" onClick={() => setSelectedDate(d)} className={`rounded-xl border px-2 py-1 text-[11px] sm:text-xs transition ${isSelected ? "border-indigo-500 bg-white text-slate-900 shadow-sm" : "border-slate-200 bg-white hover:border-indigo-300"}`}>{d}</button>);
-                      }) : (<div className="col-span-full text-xs text-slate-500">No dates available for this center.</div>)}
-                    </div>
-
-                    <div className="mt-auto border-t border-slate-200 pt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                      <div className="text-xs md:text-sm text-slate-700">
-                        <div className="font-medium">Selected Appointment Date</div>
-                        <div className="mt-0.5">{activeModalData.effectiveSelectedDate || "No date selected"}</div>
-                        {activeModalData.activeCity && (<div className="text-[11px] text-slate-500 mt-0.5">Location: {activeModalData.activeCity.name}</div>)}
+                      <div className="text-xs text-slate-500">Application center address</div>
+                      <div className="mt-1 font-medium text-slate-900">
+                        {activeModalData.activeCity?.name || "—"}
                       </div>
-                      <div className="flex flex-col md:flex-row gap-2 md:items-center">
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => changeSelectedDate(-1)} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40" disabled={!activeModalData.datesForActiveCity.length}>Previous Slot</button>
-                          <button type="button" onClick={() => changeSelectedDate(1)} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40" disabled={!activeModalData.datesForActiveCity.length}>Next Slot</button>
-                        </div>
-                        <button type="button" className="rounded-full bg-indigo-600 px-4 py-2 text-xs md:text-sm font-medium text-white shadow hover:bg-indigo-700 disabled:opacity-40" disabled={!activeModalData.effectiveSelectedDate} onClick={() => {
-                          console.log("Book appointment", {
-                            country: selectedCountry.name,
-                            countryCode: getCountryCode(selectedCountry),
-                            center: activeModalData.activeCity?.name,
-                            date: activeModalData.effectiveSelectedDate
-                          });
-                        }}>
-                          Book This Appointment
-                        </button>
+                      <div className="text-[13px] text-slate-700 mt-1">
+                        {extractAddress(activeModalData.activeCity, activeModalData.slot) || (
+                          <span className="text-[11px] text-slate-500">Address not available in API</span>
+                        )}
                       </div>
                     </div>
-
-                    <details className="mt-4 text-[11px] text-slate-500">
-                      <summary className="cursor-pointer">Raw API response</summary>
-                      <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-100 p-2 text-[10px]">{JSON.stringify(activeModalData.slot.raw, null, 2)}</pre>
-                    </details>
+                    <div className="text-xs text-slate-500 text-right">
+                      <div>VFS / BLS</div>
+                      <div className="mt-1">Mon - Fri</div>
+                      <div className="mt-1">09:30 - 16:30</div>
+                    </div>
                   </div>
+
+                  {/* small debug / raw link */}
+                  <details className="mt-3 text-[11px] text-slate-500">
+                    <summary className="cursor-pointer">Raw API snippet</summary>
+                    <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-white p-2 text-[11px]">
+                      {JSON.stringify(activeModalData.slot.raw || activeModalData.activeCity || {}, null, 2)}
+                    </pre>
+                  </details>
                 </div>
               </div>
             </div>
           </div>
-        )}
+        </div>
+      )}
+    </div>
+  );
+}
 
-        <footer className="mt-4 text-center text-[11px] text-slate-400">Internal tool · Data via Atlys APIs</footer>
+/* ---------- Helper components (CalendarGrid) ---------- */
+
+function CalendarGrid({
+  dates,
+  focusedIso,
+  onPick,
+}: {
+  dates: string[];
+  focusedIso?: string | null;
+  onPick: (iso: string) => void;
+}) {
+  // pick month based on focusedIso or first date
+  const anchorIso = focusedIso || dates[0] || null;
+  const anchorDate = anchorIso ? new Date(anchorIso) : new Date();
+  const year = anchorDate.getFullYear();
+  const month = anchorDate.getMonth();
+
+  // build simple month grid using buildMonthGrid util
+  const monthDates = dates.filter((d) => {
+    try {
+      const dd = new Date(d);
+      return dd.getFullYear() === year && dd.getMonth() === month;
+    } catch {
+      return false;
+    }
+  });
+
+  const { weeks, availableSet, selectedIso } = buildMonthGrid(monthDates, anchorIso || undefined);
+
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return (
+    <div>
+      <div className="mb-2 text-xs text-slate-600 font-medium">
+        {anchorDate.toLocaleString("en-US", { month: "long", year: "numeric" })}
+      </div>
+      <div className="grid grid-cols-7 gap-2 text-xs">
+        {weekdays.map((w) => (
+          <div key={w} className="text-[11px] text-slate-400 text-center font-medium">
+            {w}
+          </div>
+        ))}
+        {weeks.map((week, i) =>
+          week.map((iso, j) => {
+            if (!iso) {
+              return <div key={`${i}-${j}`} className="h-10" />;
+            }
+            const available = availableSet.has(iso);
+            const isSelected = iso === selectedIso;
+            return (
+              <button
+                key={`${i}-${j}`}
+                onClick={() => available && onPick(iso)}
+                className={`h-10 rounded-lg text-[13px] transition flex items-center justify-center ${
+                  available ? (isSelected ? "bg-indigo-600 text-white" : "bg-white border border-slate-200 hover:bg-indigo-50") : "bg-slate-50 text-slate-300"
+                }`}
+              >
+                <div className="text-center">
+                  <div>{new Date(iso).getDate()}</div>
+                </div>
+              </button>
+            );
+          })
+        )}
       </div>
     </div>
   );
+}
+
+/* ---------- Small utility to extract address from various payload shapes ---------- */
+function extractAddress(city: any, slot: any) {
+  // 1) city.address if present
+  if (city && (city.address || city.vfs_address)) return city.address || city.vfs_address;
+
+  // 2) slot.raw might contain centres with address. attempt to locate matching city
+  if (slot && slot.raw) {
+    const raw = slot.raw;
+    // common keys: centre_dates, centres, centres_list
+    const arrays = Object.values(raw).filter((v) => Array.isArray(v));
+    for (const arr of arrays) {
+      for (const c of arr as any[]) {
+        const nameMatch =
+          (c.centre_name && city && city.name && c.centre_name.toLowerCase().includes(city.name.toLowerCase())) ||
+          (c.cityName && city && city.name && c.cityName.toLowerCase().includes(city.name.toLowerCase()));
+        // check multiple candidate address fields
+        const addr = c.address || c.center_address || c.vfs_address || c.location || c.address_text || c.address_line;
+        if ((nameMatch || (!city)) && addr) return addr;
+      }
+    }
+  }
+
+  // 3) fallback: slot.raw.contact/address top-level
+  if (slot && slot.raw) {
+    if (slot.raw.address) return slot.raw.address;
+    if (slot.raw.contact && typeof slot.raw.contact === "string") return slot.raw.contact;
+  }
+
+  return null;
 }
